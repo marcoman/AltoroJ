@@ -1,5 +1,24 @@
+//Tested with gradle 6.3 on Ubuntu 18.04, Windows 10, and MacOS
+//This build file uses guidance from contrast at https://docs.contrastsecurity.com/installation-javaguides.html#gradle
+//Also the repository at https://github.com/Contrast-Security-OSS/contrast-java-examples.git
+// Best to try these commands:
+// gradle clean build createDockerfile - to create and inspec the contents of the Dockerfile
+// gradle clean build startContainer - to run the container on the local system
+import com.bmuschko.gradle.docker.tasks.container.DockerCreateContainer
+import com.bmuschko.gradle.docker.tasks.container.DockerRemoveContainer
+import com.bmuschko.gradle.docker.tasks.container.DockerStartContainer
+import com.bmuschko.gradle.docker.tasks.image.DockerBuildImage
+import com.bmuschko.gradle.docker.tasks.image.Dockerfile
 
-apply plugin: 'war'
+import java.nio.file.Paths
+
+plugins {
+	id 'war'
+	id "com.bmuschko.docker-remote-api" version "6.4.0"
+}
+
+//The current version of the agent.  Hard-coded.  Long-term, want something more dynamic.
+def contrast_version = "3.7.1.13882"
 
 webAppDirName = 'WebContent'
 sourceCompatibility = "1.7"; 
@@ -20,6 +39,80 @@ sourceSets {
     }
 }
 
+configurations {
+	contrastAgent
+	warLib.extendsFrom runtime
+}
+
+//Copy the contrast-agent-*.jar to the build directory, and from there we'll transfer it to the /usr/local directory of the container for startup
+task copyAgent(type:Copy){
+	from configurations.contrastAgent
+	into buildDir
+}
+
+task createSetenv() {
+	doLast {
+		new File(buildDir, "startup-with-contrast.sh").text = """#!/bin/bash
+
+export CATALINA_OPTS="\$CATALINA_OPTS -javaagent:/usr/local/contrast-agent-${contrast_version}.jar"
+/usr/local/tomcat/bin/catalina.sh run
+"""
+	}
+}
+
+task updateSetenv(type: Exec) {
+	dependsOn createSetenv
+	commandLine "chmod", "700", "${buildDir}/startup-with-contrast.sh"
+}
+
+//Notice the Dockerfile depends on a setenv.sh script, which has its sequence defined by dependsOn
+task createDockerfile(type:Dockerfile) {
+	dependsOn copyAgent
+	dependsOn updateSetenv
+	from("tomcat:jdk8-corretto")
+	copyFile("libs/altoromutual.war", "/usr/local/tomcat/webapps")
+	copyFile("contrast-agent-${contrast_version}.jar", "/usr/local")
+	copyFile("startup-with-contrast.sh", "/usr/local/tomcat/bin/startup-with-contrast.sh")
+	destFile = Paths.get("${buildDir}", "Dockerfile").toFile()
+//	I believe this next line should probably be optional, need to investigate further.
+	environmentVariable("CONTRAST_GRADLE_BIND_ADDR", "0.0.0.0")
+	defaultCommand ("startup-with-contrast.sh", "run")
+	exposePort(8080)
+}
+
+task buildDockerImage(type: DockerBuildImage) {
+	dependsOn createDockerfile
+	inputDir = buildDir
+}
+
+task createContainer(type: DockerCreateContainer) {
+	dependsOn buildDockerImage
+	targetImageId buildDockerImage.getImageId()
+	hostConfig.portBindings = ['8080:8080']
+
+	envVars = [
+			CONTRAST__API__URL: System.getenv("CONTRAST__API__URL"),
+			CONTRAST__API__USER_NAME: System.getenv("CONTRAST__API__USER_NAME"),
+			CONTRAST__API__SERVICE_KEY: System.getenv("CONTRAST__API__SERVICE_KEY"),
+			CONTRAST__API__API_KEY: System.getenv("CONTRAST__API__API_KEY"),
+			CONTRAST__APPLICATION__NAME: "${project.name}-how-to",
+			CONTRAST__APPLICATION__TAGS: "demo,altoro",
+			CONTRAST__SERVER__TAGS: "demo,altoro",
+			CONTRAST__SERVER__NAME: "${project.name}-server"
+	]
+}
+
+task startContainer(type: DockerStartContainer) {
+	dependsOn createContainer
+	targetContainerId createContainer.getContainerId()
+}
+
+task removeContainer(type: DockerRemoveContainer) {
+	removeVolumes = true
+	force = true
+	targetContainerId startContainer.getContainerId()
+}
+
 dependencies {
 	compile \
 		fileTree(dir: "${webAppDirName}/WEB-INF/lib", include: '*.jar'),
@@ -34,9 +127,11 @@ dependencies {
 		'org.apache.wink:wink-json4j:1.4'
 	providedCompile \
 		'javax:javaee-api:7.0'
+	contrastAgent "com.contrastsecurity:contrast-agent:${contrast_version}"
 }
 
 war {
+	classpath = classpath.files
 	archiveName 'altoromutual.war'
 	exclude 'WEB-INF/classes/**/*.class'
 	exclude 'WEB-INF/lib/**/*.jar'
