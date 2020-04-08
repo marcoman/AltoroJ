@@ -95,10 +95,13 @@ task createContainer(type: DockerCreateContainer) {
 			CONTRAST__API__USER_NAME: System.getenv("CONTRAST__API__USER_NAME"),
 			CONTRAST__API__SERVICE_KEY: System.getenv("CONTRAST__API__SERVICE_KEY"),
 			CONTRAST__API__API_KEY: System.getenv("CONTRAST__API__API_KEY"),
+			CONTRAST__AGENT__JAVA__STANDALONE_APP_NAME: "${project.name}-how-to-app",
 			CONTRAST__APPLICATION__NAME: "${project.name}-how-to",
 			CONTRAST__APPLICATION__TAGS: "demo,altoro",
+			CONTRAST__APPLICATION__APPNAME: "${project.name}-how-to",
 			CONTRAST__SERVER__TAGS: "demo,altoro",
 			CONTRAST__SERVER__NAME: "${project.name}-server"
+
 	]
 }
 
